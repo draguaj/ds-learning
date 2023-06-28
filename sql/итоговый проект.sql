@@ -1,5 +1,5 @@
 
--- Задание 1
+-- Задание 1 
 -- Выведите названия самолётов, которые имеют менее 50 посадочных мест
 
 select count(seat_no) as "посадочные места", model as "самолёт" 
@@ -27,10 +27,11 @@ order by month
 -- Выведите названия самолётов без бизнес-класса. Используйте в решении функцию array_agg
 
 select a.model as "самолёт",
-array_agg(s.fare_conditions) filter (where fare_conditions != 'Business') as "класс обслуживания"
+array_agg(s.fare_conditions) as "класс обслуживания"
 from aircrafts a 
 join seats s on a.aircraft_code = s.aircraft_code
 group by a.model 
+having not 'Business' = any(array_agg(s.fare_conditions))
 
 
 
@@ -40,25 +41,23 @@ group by a.model
 -- Выведите в результат код аэропорта, дату вылета, количество пустых мест и накопительный итог.
   
 
-select scheduled_departure, departure_airport, empty_seats, 
-coalesce(sum(empty_seats) over (partition by scheduled_departure, departure_airport order by scheduled_departure), empty_seats) as total
+select days, departure_airport, empty_seats, flight_id, empty_seats, 
+coalesce(sum(empty_seats) over (partition by days, departure_airport order by days), empty_seats) as total
 from
 	(select *
 	from
-		(select scheduled_departure, aircraft_code, flight_id, departure_airport, empty_seats, 
-		count(flight_id) over (partition by scheduled_departure, departure_airport) as count_planes
+		(select days, aircraft_code, flight_id, departure_airport, empty_seats, 
+		count(flight_id) over (partition by days, departure_airport) 
 		from 
-			(select date_trunc('day', f.scheduled_departure) as scheduled_departure, s.aircraft_code, f.flight_id, f.departure_airport, count(s.seat_no) as empty_seats
+			(select date_trunc('day', f.actual_departure) as days, f.aircraft_code, f.flight_id, f.departure_airport , count(s.seat_no) as empty_seats
 			from flights f 
-			full outer join boarding_passes bp on bp.flight_id = f.flight_id
+			left join boarding_passes bp on bp.flight_id = f.flight_id
 			join seats s on s.aircraft_code = f.aircraft_code
-			join airports a on f.departure_airport = a.airport_code 
-			where f.scheduled_departure is not null or s.seat_no is null 
-			group by scheduled_departure, f.flight_id, f.departure_airport, s.aircraft_code
-			order by scheduled_departure) as first_
+			where f.actual_departure is not null and bp.boarding_no is null 
+			group by days, f.flight_id, departure_airport) as first_
 			) as second_
-	where count_planes > 1) as third_
-group by flight_id, aircraft_code, scheduled_departure, departure_airport, count_planes, empty_seats
+	where count > 1) as third_
+group by flight_id, aircraft_code, days, departure_airport, count, empty_seats
 
 
 
@@ -101,18 +100,20 @@ order by "код оператора"
 --    от 150 млн включительно – high
 --Выведите в результат количество маршрутов в каждом полученном классе.
 
-select count(*) as "количество маршрутов", sum(finance) as "финансовые обороты", t.classification as классификация
+select count(*) as "количество маршрутов", 
+sum(finance) as "финансовые обороты", 
+t.classification as классификация
 from 
 (
  	select sum(tf.amount) as finance, 
 		case 
-			when sum(amount) >= 150000000 then 'high'
-			when sum(amount) between 50000000 and 150000000 then 'middle'
-			when sum(amount) < 50000000 then 'low'
+			when sum(tf.amount) >= 150000000 then 'high'
+			when sum(tf.amount) between 50000000 and 149999999 then 'middle'
+			when sum(tf.amount) < 50000000 then 'low'
 		end as classification
-	from ticket_flights tf
-	join flights f on tf.flight_id = f.flight_id
-	group by amount 
+	from flights f
+	join ticket_flights tf on f.flight_id = tf.flight_id
+	group by f.departure_airport, f.arrival_airport  
 ) t
 group by t.classification
 order by count(*)  
@@ -123,16 +124,15 @@ order by count(*)
 -- Задание 8* (самостоятельное изучение)
 -- Вычислите медиану стоимости билетов, медиану стоимости бронирования 
 --и отношение медианы бронирования к медиане стоимости билетов, результат округлите до сотых. 
-
-select median_tickets, median_booking, round(cast (median_tickets / median_booking as numeric), 2) as "median relations" 
-from(
-	select percentile_cont(0.5)
-	within group (order by tf.amount) as "median_tickets",
-	percentile_cont(0.5)
-	within group (order by b.total_amount) as "median_booking"
-	from ticket_flights tf 
-	join tickets t on tf.ticket_no = t.ticket_no 
-	join bookings b on t.book_ref = b.book_ref) as percentile
+	
+select 
+  median_tickets, 
+  median_booking, 
+  round(cast(median_booking / median_tickets as numeric), 2) as median_relations 
+from (select 
+    	(select percentile_cont(0.5) within group (order by amount) from ticket_flights) as median_tickets, 
+    	(select percentile_cont(0.5) within group (order by total_amount) from bookings) as median_booking 
+  	) as medians
 
 
 
@@ -149,8 +149,9 @@ CREATE extension cube
 CREATE extension earthdistance
 
 
-select (ed.amount / ed.distance_meters) * 1000 as min_amount
+select min((ed.amount / ed.distance_meters) * 1000) as min_amount
 from (select tf.amount,
+		f.flight_id,
 		earth_distance(
         ll_to_earth(a.latitude, a.longitude),
         ll_to_earth(a2.latitude, a2.longitude)
@@ -159,5 +160,5 @@ from (select tf.amount,
 	join airports a on f.departure_airport = a.airport_code 
 	join airports a2 on f.arrival_airport = a2.airport_code
 	join ticket_flights tf on f.flight_id = tf.flight_id
-	where f.flight_id = '30486') as ed
+	) as ed
 
