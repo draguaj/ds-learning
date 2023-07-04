@@ -41,24 +41,22 @@ having not 'Business' = any(array_agg(s.fare_conditions))
 -- Выведите в результат код аэропорта, дату вылета, количество пустых мест и накопительный итог.
   
 
-select days, departure_airport, empty_seats, flight_id, empty_seats, 
-coalesce(sum(empty_seats) over (partition by days, departure_airport order by days), empty_seats) as total
-from
-	(select *
-	from
-		(select days, aircraft_code, flight_id, departure_airport, empty_seats, 
-		count(flight_id) over (partition by days, departure_airport) 
-		from 
-			(select date_trunc('day', f.actual_departure) as days, f.aircraft_code, f.flight_id, f.departure_airport , count(s.seat_no) as empty_seats
-			from flights f 
-			left join boarding_passes bp on bp.flight_id = f.flight_id
-			join seats s on s.aircraft_code = f.aircraft_code
-			where f.actual_departure is not null and bp.boarding_no is null 
-			group by days, f.flight_id, departure_airport) as first_
-			) as second_
-	where count > 1) as third_
-group by flight_id, aircraft_code, days, departure_airport, count, empty_seats
-
+with c as (
+	select departure_airport, actual_departure, actual_departure::date ad_date, c_s
+	from flights f
+	join (
+		select aircraft_code, count(*) c_s
+		from seats
+		group by aircraft_code) s on s.aircraft_code = f.aircraft_code
+	left join boarding_passes bp on bp.flight_id = f.flight_id
+	where actual_departure is not null and bp.flight_id is null)
+select departure_airport, ad_date, c_s, sum(c_s) over (partition by departure_airport, ad_date order by actual_departure)
+from c 
+where (departure_airport, ad_date) in (
+	select departure_airport, ad_date
+	from c 
+	group by 1,2 
+	having count(*) > 1)
 
 
 
@@ -100,24 +98,18 @@ order by "код оператора"
 --    от 150 млн включительно – high
 --Выведите в результат количество маршрутов в каждом полученном классе.
 
-select count(*) as "количество маршрутов", 
-sum(finance) as "финансовые обороты", 
-t.classification as классификация
-from 
-(
- 	select sum(tf.amount) as finance, 
+select c, count(*)
+from (
+	select 
 		case 
-			when sum(tf.amount) >= 150000000 then 'high'
-			when sum(tf.amount) between 50000000 and 149999999 then 'middle'
 			when sum(tf.amount) < 50000000 then 'low'
-		end as classification
-	from flights f
-	join ticket_flights tf on f.flight_id = tf.flight_id
-	group by f.departure_airport, f.arrival_airport  
-) t
-group by t.classification
-order by count(*)  
-
+			when sum(tf.amount) >= 50000000 and sum(tf.amount) < 150000000 then 'middle'
+			else 'high'
+		end c
+	from flights f 
+	join ticket_flights tf on tf.flight_id = f.flight_id 
+	group by flight_no) t
+group by c 
 
 
 
@@ -161,4 +153,5 @@ from (select tf.amount,
 	join airports a2 on f.arrival_airport = a2.airport_code
 	join ticket_flights tf on f.flight_id = tf.flight_id
 	) as ed
+
 
